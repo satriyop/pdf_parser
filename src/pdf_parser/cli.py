@@ -1,9 +1,7 @@
 import argparse
 import glob
 import os
-import shutil
 import sys
-import tempfile
 
 from googleapiclient.errors import HttpError
 from tqdm import tqdm
@@ -13,6 +11,7 @@ from .extractor import extract_pdf_data
 from .gps import extract_gps
 from .models import SiteData
 from .writers import CsvWriter, XlsxWriter
+from .googledrive import temp_pdf_dir, DriveClient
 
 
 VERBOSE = False
@@ -154,102 +153,93 @@ def main():
         if created and not args.quiet:
             print(f"Created default config: {created}")
 
-    pdf_paths = []
-    tmpdir = None
+    # --- Route: Google Drive or local files ---
+    if args.drive:
+        if not args.quiet:
+            print("Connecting to Google Drive ...")
+        client = DriveClient(credentials_path=args.credentials or None)
 
-    try:
-        # --- Route: Google Drive or local files ---
-        if args.drive:
-            from .googledrive import DriveClient
+        if args.folder or args.search:
+            selected = client.list_files(
+                folder_id=args.folder or None,
+                search=args.search or None,
+            )
+        else:
+            selected = client.pick_interactive(
+                folder_id=args.folder or None,
+                search=args.search or None,
+            )
 
-            if not args.quiet:
-                print("Connecting to Google Drive ...")
-            client = DriveClient(credentials_path=args.credentials or None)
+        if not selected:
+            if args.folder and args.verbose:
+                print(f"\nInspecting folder tree (max depth 3):")
+                try:
+                    tree = client.inspect_folder(args.folder, max_depth=3)
+                    for line in tree:
+                        print(line)
+                except Exception as e:
+                    print(f"Could not inspect folder: {e}")
+            print("No files selected.")
+            sys.exit(0)
 
-            if args.folder or args.search:
-                selected = client.list_files(
-                    folder_id=args.folder or None,
-                    search=args.search or None,
-                )
-            else:
-                selected = client.pick_interactive(
-                    folder_id=args.folder or None,
-                    search=args.search or None,
-                )
+        if not args.quiet:
+            print(f"\nSelected {len(selected)} file(s). Downloading ...")
 
-            if not selected:
-                if args.folder and args.verbose:
-                    print(f"\nInspecting folder tree (max depth 3):")
-                    try:
-                        tree = client.inspect_folder(args.folder, max_depth=3)
-                        for line in tree:
-                            print(line)
-                    except Exception as e:
-                        print(f"Could not inspect folder: {e}")
-                print("No files selected.")
-                sys.exit(0)
-
-            if not args.quiet:
-                print(f"\nSelected {len(selected)} file(s). Downloading ...")
-            tmpdir = tempfile.mkdtemp()
-            pdf_paths = client.download_selected(selected, tmpdir)
+        with temp_pdf_dir(client, selected) as pdf_paths:
             if not args.quiet:
                 print()
-        else:
-            pdf_paths = resolve_pdf_paths(args.pdfs)
-            if not pdf_paths:
-                print("Error: no PDF files found. Use --drive for Google Drive.", file=sys.stderr)
-                sys.exit(1)
+                print(f"Found {len(pdf_paths)} PDF(s)")
+            all_sites, errors = _run_pipeline(pdf_paths, args.area, args.output, quiet=args.quiet)
+    else:
+        pdf_paths = resolve_pdf_paths(args.pdfs)
+        if not pdf_paths:
+            print("Error: no PDF files found. Use --drive for Google Drive.", file=sys.stderr)
+            sys.exit(1)
 
         if not args.quiet:
             print(f"Found {len(pdf_paths)} PDF(s)")
-
         all_sites, errors = _run_pipeline(pdf_paths, args.area, args.output, quiet=args.quiet)
 
-        # --- Google Sheets output ---
-        if args.to_sheets:
-            if not args.credentials:
-                print("Error: --credentials required with --to-sheets", file=sys.stderr)
-                sys.exit(1)
+    # --- Google Sheets output ---
+    if args.to_sheets:
+        if not args.credentials:
+            print("Error: --credentials required with --to-sheets", file=sys.stderr)
+            sys.exit(1)
 
-            sa_email = "pdf-parser-sa@nex-project-500312.iam.gserviceaccount.com"
-            from .sheets import SheetsWriter
+        sa_email = "pdf-parser-sa@nex-project-500312.iam.gserviceaccount.com"
+        from .sheets import SheetsWriter
 
-            try:
-                if not args.quiet:
-                    print("Writing to Google Sheets ...")
-                writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
-                sheet_name = args.area or "Survey Data"
-                writer.write(all_sites, sheet_name=sheet_name)
-            except HttpError as e:
-                status = e.resp.status if hasattr(e, "resp") else 0
-                if status == 403:
-                    print(f"\nERROR: Access denied (403). Share your sheet with:")
-                    print(f"  {sa_email}")
-                    print(f"  (Go to sheet → Share → add that email as Editor)")
-                elif status == 404:
-                    print(f"\nERROR: Spreadsheet not found (404). Check the URL.")
-                elif status == 429:
-                    print(f"\nERROR: Google API quota exceeded.")
-                    print(f"  Try again later, or use -o output.xlsx instead.")
-                else:
-                    print(f"\nERROR: Google Sheets API error: {e}")
-                print(f"\nFallback: data is also saved to {args.output}")
-                sys.exit(1)
+        try:
+            if not args.quiet:
+                print("Writing to Google Sheets ...")
+            writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+            sheet_name = args.area or "Survey Data"
+            writer.write(all_sites, sheet_name=sheet_name)
+        except HttpError as e:
+            status = e.resp.status if hasattr(e, "resp") else 0
+            if status == 403:
+                print(f"\nERROR: Access denied (403). Share your sheet with:")
+                print(f"  {sa_email}")
+                print(f"  (Go to sheet → Share → add that email as Editor)")
+            elif status == 404:
+                print(f"\nERROR: Spreadsheet not found (404). Check the URL.")
+            elif status == 429:
+                print(f"\nERROR: Google API quota exceeded.")
+                print(f"  Try again later, or use -o output.xlsx instead.")
+            else:
+                print(f"\nERROR: Google Sheets API error: {e}")
+            print(f"\nFallback: data is also saved to {args.output}")
+            sys.exit(1)
 
-        # --- Summary ---
-        succeeded = len(all_sites)
-        failed = len(errors)
-        if args.quiet:
-            print(f"{succeeded} succeeded, {failed} failed")
-        else:
-            print(f"Done. {succeeded} succeeded, {failed} failed.")
+    # --- Summary ---
+    succeeded = len(all_sites)
+    failed = len(errors)
+    if args.quiet:
+        print(f"{succeeded} succeeded, {failed} failed")
+    else:
+        print(f"Done. {succeeded} succeeded, {failed} failed.")
 
-        if errors and not args.quiet:
-            print("\nFailed files:")
-            for name, reason in errors:
-                print(f"  - {name}: {reason}")
-
-    finally:
-        if tmpdir:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+    if errors and not args.quiet:
+        print("\nFailed files:")
+        for name, reason in errors:
+            print(f"  - {name}: {reason}")

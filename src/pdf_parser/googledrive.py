@@ -1,5 +1,8 @@
 import os
+import shutil
 import sys
+import tempfile
+from contextlib import contextmanager
 
 from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2 import service_account
@@ -182,3 +185,12 @@ class DriveClient:
             except Exception as e:
                 print(f"FAILED: {e}")
         return downloaded
+
+
+@contextmanager
+def temp_pdf_dir(client, selected_files):
+    tmpdir = tempfile.mkdtemp()
+    try:
+        yield client.download_selected(selected_files, tmpdir)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
