@@ -16,3 +16,6 @@ output/
 
 # exclude large sample PDFs (keep locally)
 *.pdf
+
+# exclude service account keys and secrets
+*.json
