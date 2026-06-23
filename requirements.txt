@@ -3,3 +3,4 @@ Pillow>=10
 openpyxl>=3
 google-api-python-client>=2.0
 google-auth>=2.0
+tqdm>=4.0

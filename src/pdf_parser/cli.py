@@ -4,15 +4,21 @@ import os
 import sys
 import tempfile
 
+from tqdm import tqdm
+
+from .config import load_config, apply_config, create_default_config
 from .extractor import extract_pdf_data
 from .gps import extract_gps
 from .models import SiteData
 from .writers import CsvWriter, XlsxWriter
 
 
+VERBOSE = False
+
+
 def parse_single_pdf(pdf_path, area_name="", no=1):
     data = extract_pdf_data(pdf_path)
-    coord = extract_gps(pdf_path)
+    coord = extract_gps(pdf_path, verbose=VERBOSE)
 
     return SiteData(
         no=no,
@@ -47,31 +53,32 @@ def _detect_writer(output_path):
     return CsvWriter(output_path)
 
 
-def _run_pipeline(pdf_paths, area_name, output_path):
+def _run_pipeline(pdf_paths, area_name, output_path, quiet=False):
     all_sites = []
-    for i, pdf_path in enumerate(pdf_paths, 1):
-        print(f"[{i}/{len(pdf_paths)}] {os.path.basename(pdf_path)} ...", end=" ")
+    errors = []
+
+    iterator = tqdm(pdf_paths, desc="Parsing", unit="file", disable=quiet)
+    for i, pdf_path in enumerate(iterator, 1):
+        iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
         try:
             site = parse_single_pdf(pdf_path, area_name=area_name, no=i)
             all_sites.append(site)
-            print("OK")
-            print(f"       Site: {site.nama_site}")
-            print(f"       ID:   {site.site_id}")
-            print(f"       Type: {site.site_type}")
-            if site.koordinat:
-                print(f"       GPS:  {site.koordinat.split(chr(10))[0]}")
-            print()
         except Exception as e:
-            print(f"FAILED: {e}")
-            print()
+            errors.append((os.path.basename(pdf_path), str(e)))
+
+    if not quiet:
+        print()
 
     sheet_name = area_name or "Survey Data"
     writer = _detect_writer(output_path)
     writer.write(all_sites, sheet_name=sheet_name)
-    return all_sites
+
+    return all_sites, errors
 
 
 def main():
+    global VERBOSE
+
     parser = argparse.ArgumentParser(
         description="Parse Energy Saving Survey PDF to CSV or XLSX",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -84,7 +91,17 @@ def main():
         ),
     )
 
-    # --- Drive flags (optional group) ---
+    # --- Global flags ---
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show detailed debug output",
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Suppress progress output, show only results",
+    )
+
+    # --- Drive flags ---
     drive_group = parser.add_argument_group("Google Drive options")
     drive_group.add_argument(
         "--drive", action="store_true",
@@ -123,12 +140,24 @@ def main():
     )
 
     args = parser.parse_args()
+    VERBOSE = args.verbose
+
+    # --- Load config ---
+    config = load_config()
+    args = apply_config(args, config)
+
+    # --- Create default config if none exists ---
+    if not config:
+        created = create_default_config()
+        if created and not args.quiet:
+            print(f"Created default config: {created}")
 
     # --- Route: Google Drive or local files ---
     if args.drive:
         from .googledrive import DriveClient
 
-        print("Connecting to Google Drive ...")
+        if not args.quiet:
+            print("Connecting to Google Drive ...")
         client = DriveClient(credentials_path=args.credentials or None)
 
         if args.folder or args.search:
@@ -146,19 +175,22 @@ def main():
             print("No files selected.")
             sys.exit(0)
 
-        print(f"\nSelected {len(selected)} file(s). Downloading ...")
+        if not args.quiet:
+            print(f"\nSelected {len(selected)} file(s). Downloading ...")
         tmpdir = tempfile.mkdtemp()
         pdf_paths = client.download_selected(selected, tmpdir)
-        print()
+        if not args.quiet:
+            print()
     else:
         pdf_paths = resolve_pdf_paths(args.pdfs)
         if not pdf_paths:
             print("Error: no PDF files found. Use --drive for Google Drive.", file=sys.stderr)
             sys.exit(1)
 
-    print(f"Found {len(pdf_paths)} PDF(s)")
+    if not args.quiet:
+        print(f"Found {len(pdf_paths)} PDF(s)")
 
-    all_sites = _run_pipeline(pdf_paths, args.area, args.output)
+    all_sites, errors = _run_pipeline(pdf_paths, args.area, args.output, quiet=args.quiet)
 
     # --- Google Sheets output ---
     if args.to_sheets:
@@ -166,10 +198,21 @@ def main():
             print("Error: --credentials required with --to-sheets", file=sys.stderr)
             sys.exit(1)
         from .sheets import SheetsWriter
-        print("\nWriting to Google Sheets ...")
+        if not args.quiet:
+            print("Writing to Google Sheets ...")
         writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
         sheet_name = args.area or "Survey Data"
         writer.write(all_sites, sheet_name=sheet_name)
-        print(f"Done. {len(all_sites)} site(s) written to Google Sheets")
+
+    # --- Summary ---
+    succeeded = len(all_sites)
+    failed = len(errors)
+    if args.quiet:
+        print(f"{succeeded} succeeded, {failed} failed")
     else:
-        print(f"Done. {len(all_sites)} site(s) written to {args.output}")
+        print(f"Done. {succeeded} succeeded, {failed} failed.")
+
+    if errors and not args.quiet:
+        print("\nFailed files:")
+        for name, reason in errors:
+            print(f"  - {name}: {reason}")
