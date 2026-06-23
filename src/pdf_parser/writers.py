@@ -10,7 +10,9 @@ class CsvWriter:
         self.output_path = output_path
 
     def write(self, site_data_list, sheet_name=""):
-        headers = site_data_list[0].csv_headers() if site_data_list else []
+        if not site_data_list:
+            return
+        headers = site_data_list[0].csv_headers()
         file_exists = os.path.isfile(self.output_path)
 
         with open(self.output_path, "a", newline="", encoding="utf-8") as f:

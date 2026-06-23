@@ -11,6 +11,12 @@ dependencies = [
     "pdfplumber>=0.11",
     "Pillow>=10",
     "openpyxl>=3",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -18,3 +24,7 @@ where = ["src"]
 
 [project.scripts]
 pdf-parser = "pdf_parser.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
