@@ -12,22 +12,27 @@ from googleapiclient.http import MediaIoBaseDownload
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 
+def get_credentials(credentials_path=None, scopes=None):
+    if scopes is None:
+        scopes = SCOPES
+    if credentials_path:
+        return service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=scopes
+        )
+    try:
+        from google.auth import default as default_creds
+        creds, _ = default_creds(scopes=scopes)
+        return creds
+    except DefaultCredentialsError:
+        raise RuntimeError(
+            "No credentials found. Provide --credentials or set "
+            "GOOGLE_APPLICATION_CREDENTIALS env var."
+        )
+
+
 class DriveClient:
     def __init__(self, credentials_path=None):
-        if credentials_path:
-            self.creds = service_account.Credentials.from_service_account_file(
-                credentials_path, scopes=SCOPES
-            )
-        else:
-            try:
-                from google.auth import default as default_creds
-                self.creds, _ = default_creds(scopes=SCOPES)
-            except DefaultCredentialsError:
-                raise RuntimeError(
-                    "No credentials found. Provide --credentials or set "
-                    "GOOGLE_APPLICATION_CREDENTIALS env var."
-                )
-
+        self.creds = get_credentials(credentials_path)
         self.service = build("drive", "v3", credentials=self.creds)
 
     def list_files(self, folder_id=None, search=None, page_size=100):

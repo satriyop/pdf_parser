@@ -78,11 +78,9 @@ def main():
         epilog=(
             "Examples:\n"
             "  pdf-parser survey.pdf -o output.csv\n"
-            "  pdf-parser \"*.pdf\" -o output.csv --area \"EAST JAVA\"\n"
             "  pdf-parser \"*.pdf\" -o output.xlsx --area \"EAST JAVA\"\n"
-            "  pdf-parser --drive --credentials key.json --folder FOLDER_ID -o hasil.xlsx\n"
-            "  pdf-parser --drive --credentials key.json --search \"Survey\" -o hasil.csv\n"
-            "  pdf-parser --drive --credentials key.json -o hasil.xlsx  (interactive pick)\n"
+            "  pdf-parser --drive --credentials key.json --search \"Survey\" -o hasil.xlsx\n"
+            "  pdf-parser --drive --credentials key.json --search \"Survey\" --to-sheets SHEET_URL\n"
         ),
     )
 
@@ -105,7 +103,7 @@ def main():
         help="Search pattern for filenames in Google Drive",
     )
 
-    # --- Local file flags ---
+    # --- Output flags ---
     parser.add_argument(
         "pdfs", nargs="*",
         help="PDF file(s) or glob pattern (local mode only)",
@@ -117,6 +115,11 @@ def main():
     parser.add_argument(
         "--area", default="",
         help="Area/region name (e.g., EAST JAVA, BALI NUSRA)",
+    )
+    parser.add_argument(
+        "--to-sheets", default="",
+        metavar="SPREADSHEET_URL",
+        help="Output to Google Sheets (URL of existing spreadsheet shared with SA)",
     )
 
     args = parser.parse_args()
@@ -154,7 +157,19 @@ def main():
             sys.exit(1)
 
     print(f"Found {len(pdf_paths)} PDF(s)")
-    print(f"Output: {args.output}\n")
 
     all_sites = _run_pipeline(pdf_paths, args.area, args.output)
-    print(f"Done. {len(all_sites)} site(s) written to {args.output}")
+
+    # --- Google Sheets output ---
+    if args.to_sheets:
+        if not args.credentials:
+            print("Error: --credentials required with --to-sheets", file=sys.stderr)
+            sys.exit(1)
+        from .sheets import SheetsWriter
+        print("\nWriting to Google Sheets ...")
+        writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+        sheet_name = args.area or "Survey Data"
+        writer.write(all_sites, sheet_name=sheet_name)
+        print(f"Done. {len(all_sites)} site(s) written to Google Sheets")
+    else:
+        print(f"Done. {len(all_sites)} site(s) written to {args.output}")

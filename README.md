@@ -32,10 +32,33 @@ pdf-parser --drive --credentials key.json --folder FOLDER_ID -o hasil.xlsx
 pdf-parser --drive --credentials key.json --search "BAYEMAN" -o hasil.csv
 pdf-parser --drive --credentials key.json -o hasil.xlsx   # interactive pick
 
+# Google Sheets output (must share sheet with SA email first)
+pdf-parser --drive --credentials key.json --search "Survey" --to-sheets "https://docs.google.com/spreadsheets/d/SPREADSHEET_ID"
+
 # With env var (no --credentials needed)
 export GOOGLE_APPLICATION_CREDENTIALS=~/.config/pdf-parser/key.json
 pdf-parser --drive --folder FOLDER_ID -o hasil.xlsx
 ```
+
+## Google Sheets Output
+
+### Setup
+
+1. Create a new Google Sheet in your Drive
+2. Share it with your Service Account email as **Editor**:
+   ```
+   pdf-parser-sa@your-project.iam.gserviceaccount.com
+   ```
+3. Use the sheet URL:
+   ```bash
+   pdf-parser --drive --credentials key.json --search "Survey" --to-sheets "https://docs.google.com/spreadsheets/d/abc123..."
+   ```
+
+### Behavior
+
+- Each `--area` becomes a separate sheet tab within the spreadsheet
+- Running again with the same `--area` **appends** rows to the existing sheet
+- Running with a different `--area` **creates a new tab**
 
 ## Google Drive Setup
 
