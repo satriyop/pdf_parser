@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 
+from googleapiclient.errors import HttpError
 from tqdm import tqdm
 
 from .config import load_config, apply_config, create_default_config
@@ -172,6 +173,14 @@ def main():
             )
 
         if not selected:
+            if args.folder and args.verbose:
+                print(f"\nInspecting folder tree (max depth 3):")
+                try:
+                    tree = client.inspect_folder(args.folder, max_depth=3)
+                    for line in tree:
+                        print(line)
+                except Exception as e:
+                    print(f"Could not inspect folder: {e}")
             print("No files selected.")
             sys.exit(0)
 
@@ -197,12 +206,31 @@ def main():
         if not args.credentials:
             print("Error: --credentials required with --to-sheets", file=sys.stderr)
             sys.exit(1)
+
+        sa_email = "pdf-parser-sa@nex-project-500312.iam.gserviceaccount.com"
         from .sheets import SheetsWriter
-        if not args.quiet:
-            print("Writing to Google Sheets ...")
-        writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
-        sheet_name = args.area or "Survey Data"
-        writer.write(all_sites, sheet_name=sheet_name)
+
+        try:
+            if not args.quiet:
+                print("Writing to Google Sheets ...")
+            writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+            sheet_name = args.area or "Survey Data"
+            writer.write(all_sites, sheet_name=sheet_name)
+        except HttpError as e:
+            status = e.resp.status if hasattr(e, "resp") else 0
+            if status == 403:
+                print(f"\nERROR: Access denied (403). Share your sheet with:")
+                print(f"  {sa_email}")
+                print(f"  (Go to sheet → Share → add that email as Editor)")
+            elif status == 404:
+                print(f"\nERROR: Spreadsheet not found (404). Check the URL.")
+            elif status == 429:
+                print(f"\nERROR: Google API quota exceeded.")
+                print(f"  Try again later, or use -o output.xlsx instead.")
+            else:
+                print(f"\nERROR: Google Sheets API error: {e}")
+            print(f"\nFallback: data is also saved to {args.output}")
+            sys.exit(1)
 
     # --- Summary ---
     succeeded = len(all_sites)

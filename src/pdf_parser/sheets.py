@@ -2,6 +2,7 @@ import re
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -13,6 +14,9 @@ def _extract_spreadsheet_id(input_str):
     if re.match(r"^[a-zA-Z0-9_-]{10,}$", input_str):
         return input_str
     return None
+
+
+SA_EMAIL = "pdf-parser-sa@nex-project-500312.iam.gserviceaccount.com"
 
 
 class SheetsWriter:
@@ -31,15 +35,25 @@ class SheetsWriter:
         self.spreadsheet_id = sid
 
     def _ensure_sheet(self, sheet_name):
-        sheets = (
-            self.service.spreadsheets()
-            .get(
-                spreadsheetId=self.spreadsheet_id,
-                fields="sheets.properties",
+        try:
+            sheets = (
+                self.service.spreadsheets()
+                .get(
+                    spreadsheetId=self.spreadsheet_id,
+                    fields="sheets.properties",
+                )
+                .execute()
+                .get("sheets", [])
             )
-            .execute()
-            .get("sheets", [])
-        )
+        except HttpError as e:
+            status = e.resp.status if hasattr(e, "resp") else 0
+            if status == 403:
+                raise RuntimeError(
+                    f"Access denied. Share the sheet with {SA_EMAIL} as Editor."
+                )
+            if status == 404:
+                raise RuntimeError("Spreadsheet not found. Check the URL.")
+            raise
 
         for s in sheets:
             if s["properties"]["title"] == sheet_name:
@@ -48,9 +62,12 @@ class SheetsWriter:
         body = {
             "requests": [{"addSheet": {"properties": {"title": sheet_name}}}]
         }
-        self.service.spreadsheets().batchUpdate(
-            spreadsheetId=self.spreadsheet_id, body=body
-        ).execute()
+        try:
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id, body=body
+            ).execute()
+        except HttpError as e:
+            raise RuntimeError(f"Failed to create sheet tab: {e}")
         return True
 
     def write(self, site_data_list, sheet_name="Survey Data"):
@@ -66,21 +83,31 @@ class SheetsWriter:
 
         range_name = f"'{sheet_name}'!A1"
 
-        if is_new_sheet:
-            self.service.spreadsheets().values().update(
-                spreadsheetId=self.spreadsheet_id,
-                range=range_name,
-                valueInputOption="USER_ENTERED",
-                body={"values": rows},
-            ).execute()
-        else:
-            self.service.spreadsheets().values().append(
-                spreadsheetId=self.spreadsheet_id,
-                range=range_name,
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body={"values": rows},
-            ).execute()
+        try:
+            if is_new_sheet:
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=range_name,
+                    valueInputOption="USER_ENTERED",
+                    body={"values": rows},
+                ).execute()
+            else:
+                self.service.spreadsheets().values().append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=range_name,
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": rows},
+                ).execute()
+        except HttpError as e:
+            status = e.resp.status if hasattr(e, "resp") else 0
+            if status == 403:
+                raise RuntimeError(
+                    f"Access denied. Share the sheet with {SA_EMAIL} as Editor."
+                )
+            if status == 429:
+                raise RuntimeError("API quota exceeded. Try again later.")
+            raise
 
         url = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}"
         print(f"    Sheet URL: {url}")

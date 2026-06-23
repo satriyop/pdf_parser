@@ -1,4 +1,3 @@
-import io
 import os
 import sys
 
@@ -10,6 +9,11 @@ from googleapiclient.http import MediaIoBaseDownload
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+_DRIVE_KWARGS = {
+    "supportsAllDrives": True,
+    "includeItemsFromAllDrives": True,
+}
 
 
 def get_credentials(credentials_path=None, scopes=None):
@@ -36,13 +40,38 @@ class DriveClient:
         self.service = build("drive", "v3", credentials=self.creds)
 
     def list_files(self, folder_id=None, search=None, page_size=100):
-        query_parts = ["mimeType='application/pdf'"]
-        if folder_id:
-            query_parts.append(f"'{folder_id}' in parents")
-        if search:
-            query_parts.append(f"name contains '{search}'")
+        files = []
 
-        query = " and ".join(query_parts)
+        if folder_id:
+            files = self._walk_folder(folder_id, search=search)
+        else:
+            query_parts = ["mimeType='application/pdf'"]
+            if search:
+                query_parts.append(f"name contains '{search}'")
+            query = " and ".join(query_parts)
+
+            page_token = None
+            while True:
+                resp = (
+                    self.service.files()
+                    .list(
+                        q=query,
+                        spaces="drive",
+                        fields="nextPageToken, files(id, name, size)",
+                        pageSize=page_size,
+                        pageToken=page_token,
+                        **_DRIVE_KWARGS,
+                    )
+                    .execute()
+                )
+                files.extend(resp.get("files", []))
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
+
+        return files
+
+    def _walk_folder(self, folder_id, search=None):
         files = []
         page_token = None
 
@@ -50,20 +79,55 @@ class DriveClient:
             resp = (
                 self.service.files()
                 .list(
-                    q=query,
+                    q=f"'{folder_id}' in parents and trashed=false",
                     spaces="drive",
-                    fields="nextPageToken, files(id, name, size)",
-                    pageSize=page_size,
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    pageSize=100,
                     pageToken=page_token,
+                    **_DRIVE_KWARGS,
                 )
                 .execute()
             )
-            files.extend(resp.get("files", []))
+
+            for f in resp.get("files", []):
+                if f["mimeType"] == "application/pdf":
+                    if not search or search.lower() in f["name"].lower():
+                        files.append({"id": f["id"], "name": f["name"], "size": f.get("size", 0)})
+                elif "folder" in f["mimeType"]:
+                    files.extend(self._walk_folder(f["id"], search=search))
+
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
 
         return files
+
+    def inspect_folder(self, folder_id, depth=0, max_depth=2):
+        lines = []
+        page_token = None
+        while True:
+            resp = (
+                self.service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed=false",
+                    spaces="drive",
+                    fields="nextPageToken, files(id, name, mimeType)",
+                    pageSize=100,
+                    pageToken=page_token,
+                    **_DRIVE_KWARGS,
+                )
+                .execute()
+            )
+            for f in resp.get("files", []):
+                is_folder = "folder" in f["mimeType"]
+                prefix = "  " * (depth + 1) + ("[D]" if is_folder else "[F]")
+                lines.append(f"{prefix} {f['name']}")
+                if is_folder and depth < max_depth:
+                    lines.extend(self.inspect_folder(f["id"], depth + 1, max_depth))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return lines
 
     def download(self, file_id, dest_path):
         request = self.service.files().get_media(fileId=file_id)
