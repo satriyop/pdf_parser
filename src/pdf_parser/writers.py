@@ -22,10 +22,21 @@ class CsvWriter:
             for site in site_data_list:
                 writer.writerow(site.to_csv_row())
 
+    def write_one(self, site, sheet_name=""):
+        file_exists = os.path.isfile(self.output_path)
+        with open(self.output_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(site.csv_headers())
+            writer.writerow(site.to_csv_row())
+
 
 class XlsxWriter:
     def __init__(self, output_path):
         self.output_path = output_path
+        self._wb = None
+        self._ws = None
+        self._sheet_name = ""
 
     def write(self, site_data_list, sheet_name="Survey Data"):
         if not site_data_list:
@@ -50,6 +61,31 @@ class XlsxWriter:
 
         self._auto_width(ws)
         wb.save(self.output_path)
+
+    def write_one(self, site, sheet_name="Survey Data"):
+        if self._wb is None or self._sheet_name != sheet_name:
+            if os.path.isfile(self.output_path):
+                self._wb = load_workbook(self.output_path)
+            else:
+                self._wb = Workbook()
+                if "Sheet" in self._wb.sheetnames:
+                    del self._wb["Sheet"]
+            self._sheet_name = sheet_name
+            if sheet_name in self._wb.sheetnames:
+                self._ws = self._wb[sheet_name]
+            else:
+                self._ws = self._wb.create_sheet(title=sheet_name)
+                self._ws.append(site.csv_headers())
+                self._style_header(self._ws, len(site.csv_headers()))
+
+        self._ws.append(site.to_xlsx_row())
+        self._wb.save(self.output_path)
+
+    def close(self):
+        if self._wb:
+            self._auto_width(self._ws)
+            self._wb.save(self.output_path)
+            self._wb.close()
 
     def _style_header(self, ws, col_count):
         bold = Font(bold=True)

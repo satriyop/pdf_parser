@@ -194,3 +194,21 @@ def temp_pdf_dir(client, selected_files):
         yield client.download_selected(selected_files, tmpdir)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@contextmanager
+def stream_pdf_dir(client, selected_files):
+    tmpdir = tempfile.mkdtemp()
+    try:
+        def _stream():
+            for f in selected_files:
+                name = f["name"]
+                dest = os.path.join(tmpdir, name)
+                client.download(f["id"], dest)
+                yield dest, f["id"]
+                if os.path.exists(dest):
+                    os.remove(dest)
+
+        yield _stream()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

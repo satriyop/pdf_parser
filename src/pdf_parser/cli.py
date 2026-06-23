@@ -10,8 +10,9 @@ from .config import load_config, apply_config, create_default_config
 from .extractor import extract_pdf_data
 from .gps import extract_gps
 from .models import SiteData
+from .progress import ProgressTracker
 from .writers import CsvWriter, XlsxWriter
-from .googledrive import temp_pdf_dir, DriveClient
+from .googledrive import stream_pdf_dir, DriveClient
 
 
 VERBOSE = False
@@ -54,27 +55,8 @@ def _detect_writer(output_path):
     return CsvWriter(output_path)
 
 
-def _run_pipeline(pdf_paths, area_name, output_path, quiet=False):
-    all_sites = []
-    errors = []
-
-    iterator = tqdm(pdf_paths, desc="Parsing", unit="file", disable=quiet)
-    for i, pdf_path in enumerate(iterator, 1):
-        iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
-        try:
-            site = parse_single_pdf(pdf_path, area_name=area_name, no=i)
-            all_sites.append(site)
-        except Exception as e:
-            errors.append((os.path.basename(pdf_path), str(e)))
-
-    if not quiet:
-        print()
-
-    sheet_name = area_name or "Survey Data"
-    writer = _detect_writer(output_path)
-    writer.write(all_sites, sheet_name=sheet_name)
-
-    return all_sites, errors
+def _write_site(writer, site):
+    writer.write_one(site)
 
 
 def main():
@@ -153,6 +135,9 @@ def main():
         if created and not args.quiet:
             print(f"Created default config: {created}")
 
+    writer = None
+    sheet_name = args.area or "Survey Data"
+
     # --- Route: Google Drive or local files ---
     if args.drive:
         if not args.quiet:
@@ -183,13 +168,38 @@ def main():
             sys.exit(0)
 
         if not args.quiet:
-            print(f"\nSelected {len(selected)} file(s). Downloading ...")
+            print(f"\nSelected {len(selected)} file(s). Processing ...")
 
-        with temp_pdf_dir(client, selected) as pdf_paths:
-            if not args.quiet:
-                print()
-                print(f"Found {len(pdf_paths)} PDF(s)")
-            all_sites, errors = _run_pipeline(pdf_paths, args.area, args.output, quiet=args.quiet)
+        tracker = ProgressTracker(args.output)
+        remaining = tracker.remaining(selected)
+        skipped = len(selected) - len(remaining)
+
+        if skipped and not args.quiet:
+            print(f"  Skipping {skipped} already-processed file(s).")
+
+        all_sites = []
+        errors = []
+        writer = _detect_writer(args.output)
+        total = len(remaining)
+        done_count = tracker.done_count()
+
+        with stream_pdf_dir(client, remaining) as streamer:
+            iterator = tqdm(streamer, desc="Parsing", unit="file",
+                            total=total, disable=args.quiet,
+                            initial=0)
+            for pdf_path, file_id in iterator:
+                iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
+                try:
+                    no = done_count + len(all_sites) + 1
+                    site = parse_single_pdf(pdf_path, area_name=args.area, no=no)
+                    _write_site(writer, site)
+                    all_sites.append(site)
+                    tracker.mark_done(file_id)
+                except Exception as e:
+                    errors.append((os.path.basename(pdf_path), str(e)))
+
+        if not args.quiet:
+            print()
     else:
         pdf_paths = resolve_pdf_paths(args.pdfs)
         if not pdf_paths:
@@ -198,7 +208,27 @@ def main():
 
         if not args.quiet:
             print(f"Found {len(pdf_paths)} PDF(s)")
-        all_sites, errors = _run_pipeline(pdf_paths, args.area, args.output, quiet=args.quiet)
+
+        all_sites = []
+        errors = []
+
+        writer = _detect_writer(args.output)
+        iterator = tqdm(pdf_paths, desc="Parsing", unit="file", disable=args.quiet)
+        for i, pdf_path in enumerate(iterator, 1):
+            iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
+            try:
+                site = parse_single_pdf(pdf_path, area_name=args.area, no=i)
+                _write_site(writer, site)
+                all_sites.append(site)
+            except Exception as e:
+                errors.append((os.path.basename(pdf_path), str(e)))
+
+        if not args.quiet:
+            print()
+
+    # Close writer if XLSX
+    if writer and isinstance(writer, XlsxWriter):
+        writer.close()
 
     # --- Google Sheets output ---
     if args.to_sheets:
@@ -212,9 +242,8 @@ def main():
         try:
             if not args.quiet:
                 print("Writing to Google Sheets ...")
-            writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
-            sheet_name = args.area or "Survey Data"
-            writer.write(all_sites, sheet_name=sheet_name)
+            sheets_writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+            sheets_writer.write(all_sites, sheet_name=sheet_name)
         except HttpError as e:
             status = e.resp.status if hasattr(e, "resp") else 0
             if status == 403:
