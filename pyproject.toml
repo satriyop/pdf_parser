@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-parser"
+version = "1.0.0"
+description = "Parse Energy Saving Survey PDFs to CSV"
+requires-python = ">=3.10"
+dependencies = [
+    "pdfplumber>=0.11",
+    "Pillow>=10",
+    "openpyxl>=3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+pdf-parser = "pdf_parser.cli:main"

@@ -1,0 +1,18 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+dist/
+build/
+output/
+
+# exclude all CSV/XLSX except reference samples
+*.csv
+!Survey*.csv
+*.xlsx
+!Survey*.xlsx
+
+# exclude large sample PDFs (keep locally)
+*.pdf
