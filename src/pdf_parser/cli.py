@@ -136,6 +136,7 @@ def main():
             print(f"Created default config: {created}")
 
     writer = None
+    sheets_writer = None
     sheet_name = args.area or "Survey Data"
 
     # --- Route: Google Drive or local files ---
@@ -183,17 +184,25 @@ def main():
         total = len(remaining)
         done_count = tracker.done_count()
 
+        sheets_writer = None
+        if args.to_sheets:
+            from .sheets import SheetsWriter
+            sheets_writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+
         with stream_pdf_dir(client, remaining) as streamer:
             iterator = tqdm(streamer, desc="Parsing", unit="file",
                             total=total, disable=args.quiet,
                             initial=0)
-            for pdf_path, file_id in iterator:
+            for pdf_path, file_id, folder in iterator:
                 iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
                 try:
                     no = done_count + len(all_sites) + 1
                     site = parse_single_pdf(pdf_path, area_name=args.area, no=no)
                     _write_site(writer, site)
                     all_sites.append(site)
+                    if sheets_writer:
+                        tab_name = folder.split("/")[0] if folder else sheet_name
+                        sheets_writer.append_one(site, sheet_name=tab_name)
                     tracker.mark_done(file_id)
                 except Exception as e:
                     errors.append((os.path.basename(pdf_path), str(e)))
@@ -230,8 +239,8 @@ def main():
     if writer and isinstance(writer, XlsxWriter):
         writer.close()
 
-    # --- Google Sheets output ---
-    if args.to_sheets:
+    # --- Google Sheets output (local mode only; Drive mode writes per-file above) ---
+    if args.to_sheets and not sheets_writer:
         if not args.credentials:
             print("Error: --credentials required with --to-sheets", file=sys.stderr)
             sys.exit(1)

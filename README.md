@@ -39,6 +39,7 @@ pdf-parser --drive --folder FOLDER_ID --search "SURVEY"  # filtered recursive
 
 # Google Sheets (share sheet with SA email first)
 pdf-parser --drive --search "Survey" --to-sheets "https://docs.google.com/spreadsheets/d/SPREADSHEET_ID"
+pdf-parser --drive --folder FOLDER_ID --to-sheets "https://docs.google.com/spreadsheets/d/SPREADSHEET_ID"
 
 # Flags
 pdf-parser -v "*.pdf" -o debug.xlsx              # verbose OCR debug
@@ -56,7 +57,11 @@ pdf-parser -q --drive --folder X -o hasil.xlsx   # quiet, summary only
    ```
 3. Use the sheet URL:
    ```bash
+   # Search by name across all drive
    pdf-parser --drive --search "Survey" --to-sheets "https://docs.google.com/spreadsheets/d/abc123..."
+
+   # Or scan a specific folder recursively (all subfolders)
+   pdf-parser --drive --folder FOLDER_ID --to-sheets "https://docs.google.com/spreadsheets/d/abc123..."
    ```
 
 ### Behavior
@@ -72,10 +77,12 @@ When processing many files, progress is tracked per-file in `{output}.progress.j
 ```bash
 # First run: process 800/1207 files → crash
 pdf-parser --drive --folder FOLDER_ID -o hasil.xlsx
+pdf-parser --drive --folder FOLDER_ID --to-sheets "https://docs.google.com/spreadsheets/d/SHEET_ID"
 # ... crash at file #801 ...
 
 # Retry: skips first 800 files, resumes from #801
 pdf-parser --drive --folder FOLDER_ID -o hasil.xlsx
+pdf-parser --drive --folder FOLDER_ID --to-sheets "https://docs.google.com/spreadsheets/d/SHEET_ID"
 ```
 
 `progress.json` is safe to delete — just clears the checkpoint.

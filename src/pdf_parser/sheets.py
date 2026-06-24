@@ -33,6 +33,18 @@ class SheetsWriter:
                 "Use the full URL: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID"
             )
         self.spreadsheet_id = sid
+        self._initialized = set()
+
+    def _raise_on_api_error(self, e):
+        status = e.resp.status if hasattr(e, "resp") else 0
+        if status == 403:
+            raise RuntimeError(
+                f"Access denied. Share the sheet with {SA_EMAIL} as Editor."
+            )
+        if status == 404:
+            raise RuntimeError("Spreadsheet not found. Check the URL.")
+        if status == 429:
+            raise RuntimeError("API quota exceeded. Try again later.")
 
     def _ensure_sheet(self, sheet_name):
         try:
@@ -46,13 +58,7 @@ class SheetsWriter:
                 .get("sheets", [])
             )
         except HttpError as e:
-            status = e.resp.status if hasattr(e, "resp") else 0
-            if status == 403:
-                raise RuntimeError(
-                    f"Access denied. Share the sheet with {SA_EMAIL} as Editor."
-                )
-            if status == 404:
-                raise RuntimeError("Spreadsheet not found. Check the URL.")
+            self._raise_on_api_error(e)
             raise
 
         for s in sheets:
@@ -69,6 +75,41 @@ class SheetsWriter:
         except HttpError as e:
             raise RuntimeError(f"Failed to create sheet tab: {e}")
         return True
+
+    def _init_sheet(self, sheet_name, headers):
+        if sheet_name in self._initialized:
+            return
+        is_new = self._ensure_sheet(sheet_name)
+        if is_new:
+            range_name = f"'{sheet_name}'!A1"
+            try:
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=range_name,
+                    valueInputOption="USER_ENTERED",
+                    body={"values": [headers]},
+                ).execute()
+            except HttpError as e:
+                self._raise_on_api_error(e)
+                raise
+        self._initialized.add(sheet_name)
+
+    def append_one(self, site, sheet_name="Survey Data"):
+        headers = site.csv_headers()
+        self._init_sheet(sheet_name, headers)
+        row = site.to_xlsx_row()
+        range_name = f"'{sheet_name}'!A1"
+        try:
+            self.service.spreadsheets().values().append(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [row]},
+            ).execute()
+        except HttpError as e:
+            self._raise_on_api_error(e)
+            raise
 
     def write(self, site_data_list, sheet_name="Survey Data"):
         if not site_data_list:

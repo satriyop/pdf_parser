@@ -74,7 +74,7 @@ class DriveClient:
 
         return files
 
-    def _walk_folder(self, folder_id, search=None):
+    def _walk_folder(self, folder_id, search=None, folder_path=""):
         files = []
         page_token = None
 
@@ -95,9 +95,15 @@ class DriveClient:
             for f in resp.get("files", []):
                 if f["mimeType"] == "application/pdf":
                     if not search or search.lower() in f["name"].lower():
-                        files.append({"id": f["id"], "name": f["name"], "size": f.get("size", 0)})
+                        files.append({
+                            "id": f["id"],
+                            "name": f["name"],
+                            "size": f.get("size", 0),
+                            "folder": folder_path,
+                        })
                 elif "folder" in f["mimeType"]:
-                    files.extend(self._walk_folder(f["id"], search=search))
+                    sub_path = f"{folder_path}/{f['name']}" if folder_path else f["name"]
+                    files.extend(self._walk_folder(f["id"], search=search, folder_path=sub_path))
 
             page_token = resp.get("nextPageToken")
             if not page_token:
@@ -205,7 +211,7 @@ def stream_pdf_dir(client, selected_files):
                 name = f["name"]
                 dest = os.path.join(tmpdir, name)
                 client.download(f["id"], dest)
-                yield dest, f["id"]
+                yield dest, f["id"], f.get("folder", "")
                 if os.path.exists(dest):
                     os.remove(dest)
 
