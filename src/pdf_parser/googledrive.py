@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 
 from google.auth.exceptions import DefaultCredentialsError
@@ -12,6 +13,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
 
 _DRIVE_KWARGS = {
     "supportsAllDrives": True,
@@ -139,12 +141,27 @@ class DriveClient:
         return lines
 
     def download(self, file_id, dest_path):
-        request = self.service.files().get_media(fileId=file_id)
-        with open(dest_path, "wb") as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+        import httplib2
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                request = self.service.files().get_media(fileId=file_id)
+                with open(dest_path, "wb") as f:
+                    downloader = MediaIoBaseDownload(f, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                return
+            except (
+                TimeoutError, ConnectionError, OSError,
+                httplib2.ServerNotFoundError,
+            ) as e:
+                last_error = e
+                if attempt < 3:
+                    delay = 4 * (2 ** (attempt - 1))
+                    print(f"  Retry download {attempt}/3 after {delay}s: {e}")
+                    time.sleep(delay)
+        raise last_error
 
     def pick_interactive(self, folder_id=None, search=None):
         files = self.list_files(folder_id=folder_id, search=search)

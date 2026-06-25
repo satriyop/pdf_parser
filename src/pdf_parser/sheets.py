@@ -1,4 +1,5 @@
 import re
+import time
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -17,6 +18,30 @@ def _extract_spreadsheet_id(input_str):
 
 
 SA_EMAIL = "pdf-parser-sa@nex-project-500312.iam.gserviceaccount.com"
+
+
+def _execute_with_retry(request, max_attempts=3, base_delay=4):
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return request.execute()
+        except (TimeoutError, ConnectionError, OSError) as e:
+            last_error = e
+            if attempt < max_attempts:
+                delay = base_delay * (2 ** (attempt - 1))
+                print(f"  Retry API {attempt}/{max_attempts} after {delay}s: {e}")
+                time.sleep(delay)
+        except HttpError as e:
+            status = e.resp.status if hasattr(e, "resp") else 0
+            if status >= 500:
+                last_error = e
+                if attempt < max_attempts:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    print(f"  Retry API {attempt}/{max_attempts} after {delay}s (HTTP {status})")
+                    time.sleep(delay)
+            else:
+                raise
+    raise last_error
 
 
 class SheetsWriter:
@@ -48,15 +73,13 @@ class SheetsWriter:
 
     def _ensure_sheet(self, sheet_name):
         try:
-            sheets = (
-                self.service.spreadsheets()
-                .get(
+            resp = _execute_with_retry(
+                self.service.spreadsheets().get(
                     spreadsheetId=self.spreadsheet_id,
                     fields="sheets.properties",
                 )
-                .execute()
-                .get("sheets", [])
             )
+            sheets = resp.get("sheets", [])
         except HttpError as e:
             self._raise_on_api_error(e)
             raise
@@ -69,9 +92,11 @@ class SheetsWriter:
             "requests": [{"addSheet": {"properties": {"title": sheet_name}}}]
         }
         try:
-            self.service.spreadsheets().batchUpdate(
-                spreadsheetId=self.spreadsheet_id, body=body
-            ).execute()
+            _execute_with_retry(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id, body=body
+                )
+            )
         except HttpError as e:
             raise RuntimeError(f"Failed to create sheet tab: {e}")
         return True
@@ -83,12 +108,14 @@ class SheetsWriter:
         if is_new:
             range_name = f"'{sheet_name}'!A1"
             try:
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.spreadsheet_id,
-                    range=range_name,
-                    valueInputOption="USER_ENTERED",
-                    body={"values": [headers]},
-                ).execute()
+                _execute_with_retry(
+                    self.service.spreadsheets().values().update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=range_name,
+                        valueInputOption="USER_ENTERED",
+                        body={"values": [headers]},
+                    )
+                )
             except HttpError as e:
                 self._raise_on_api_error(e)
                 raise
@@ -100,13 +127,15 @@ class SheetsWriter:
         row = site.to_xlsx_row()
         range_name = f"'{sheet_name}'!A1"
         try:
-            self.service.spreadsheets().values().append(
-                spreadsheetId=self.spreadsheet_id,
-                range=range_name,
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body={"values": [row]},
-            ).execute()
+            _execute_with_retry(
+                self.service.spreadsheets().values().append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=range_name,
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": [row]},
+                )
+            )
         except HttpError as e:
             self._raise_on_api_error(e)
             raise
