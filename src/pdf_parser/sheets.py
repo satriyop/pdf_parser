@@ -60,6 +60,18 @@ class SheetsWriter:
         self.spreadsheet_id = sid
         self._initialized = set()
 
+    def _close_http(self):
+        if hasattr(self.service, "_http") and self.service._http:
+            try:
+                for conn in self.service._http.connections.values():
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                self.service._http.connections.clear()
+            except Exception:
+                pass
+
     def _raise_on_api_error(self, e):
         status = e.resp.status if hasattr(e, "resp") else 0
         if status == 403:
@@ -119,6 +131,9 @@ class SheetsWriter:
             except HttpError as e:
                 self._raise_on_api_error(e)
                 raise
+            finally:
+                self._close_http()
+                time.sleep(0.5)
         self._initialized.add(sheet_name)
 
     def append_one(self, site, sheet_name="Survey Data"):
@@ -139,6 +154,9 @@ class SheetsWriter:
         except HttpError as e:
             self._raise_on_api_error(e)
             raise
+        finally:
+            self._close_http()
+            time.sleep(0.3)
 
     def write(self, site_data_list, sheet_name="Survey Data"):
         if not site_data_list:

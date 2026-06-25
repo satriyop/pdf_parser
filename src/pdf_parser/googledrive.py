@@ -140,6 +140,18 @@ class DriveClient:
                 break
         return lines
 
+    def _close_http(self):
+        if hasattr(self.service, "_http") and self.service._http:
+            try:
+                for conn in self.service._http.connections.values():
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                self.service._http.connections.clear()
+            except Exception:
+                pass
+
     def download(self, file_id, dest_path):
         import httplib2
         last_error = None
@@ -151,6 +163,7 @@ class DriveClient:
                     done = False
                     while not done:
                         _, done = downloader.next_chunk()
+                self._close_http()
                 return
             except (
                 TimeoutError, ConnectionError, OSError,
