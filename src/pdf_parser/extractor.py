@@ -1,5 +1,10 @@
+import os
 import re
+import subprocess
+import tempfile
+
 import pdfplumber
+from PIL import Image
 
 
 def get_pdf_lines(pdf_path):
@@ -29,6 +34,71 @@ def get_page_texts(pdf_path):
         for page in pdf.pages:
             texts.append(page.extract_text() or "")
     return texts
+
+
+def _ocr_page(pdf_path, page_num, dpi=200):
+    tmpdir = tempfile.mkdtemp()
+    try:
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", str(dpi), "-f", str(page_num), "-l", str(page_num),
+             pdf_path, f"{tmpdir}/p"],
+            capture_output=True, timeout=60,
+        )
+        files = [f for f in os.listdir(tmpdir) if f.endswith(".png")]
+        if not files:
+            return ""
+        img = Image.open(os.path.join(tmpdir, files[0]))
+        jpg_path = os.path.join(tmpdir, "page.jpg")
+        img.save(jpg_path, "JPEG", quality=90)
+
+        outpath = os.path.join(tmpdir, "ocr")
+        subprocess.run(
+            ["tesseract", jpg_path, outpath],
+            capture_output=True, timeout=120,
+        )
+        txt_path = outpath + ".txt"
+        if os.path.exists(txt_path):
+            with open(txt_path) as f:
+                return f.read()
+        return ""
+    finally:
+        for f in os.listdir(tmpdir):
+            os.remove(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def _ocr_all_pages(pdf_path, dpi=300):
+    import pdfplumber
+    with pdfplumber.open(pdf_path) as pdf:
+        num_pages = len(pdf.pages)
+    texts = []
+    for i in range(1, num_pages + 1):
+        text = _ocr_page(pdf_path, i, dpi=dpi)
+        texts.append(text)
+    return texts
+
+
+def _ocr_lines_from_text(texts):
+    labels = {"Site ID", "Site Name", "Jumlah Phase"}
+    lines_by_page = []
+    for text in texts:
+        page_lines = []
+        for y, line in enumerate(text.split("\n")):
+            tokens = line.strip().split()
+            if not tokens:
+                continue
+            words = []
+            i = 0
+            while i < len(tokens):
+                if i + 1 < len(tokens) and f"{tokens[i]} {tokens[i+1]}" in labels:
+                    words.append((float(i), f"{tokens[i]} {tokens[i+1]}"))
+                    i += 2
+                else:
+                    words.append((float(i), tokens[i]))
+                    i += 1
+            page_lines.append((float(y), words))
+        lines_by_page.append(page_lines)
+    return lines_by_page
 
 
 def find_header_value(lines, label):
@@ -85,6 +155,15 @@ def extract_pdf_data(pdf_path):
 
     site_id = find_header_value(page0, "Site ID")
     site_name = find_header_value(page0, "Site Name")
+
+    # Fallback to OCR if text extraction returned no data
+    if not site_id and not site_name:
+        page_texts = _ocr_all_pages(pdf_path)
+        lines_by_page = _ocr_lines_from_text(page_texts)
+        page0 = lines_by_page[0] if lines_by_page else []
+        site_id = find_header_value(page0, "Site ID")
+        site_name = find_header_value(page0, "Site Name")
+
     region = find_header_value(page0, "Region")
     jml_phase = find_metric_value(page0, "Jumlah Phase")
     daya_actual_raw = find_metric_value(
