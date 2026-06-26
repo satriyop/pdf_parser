@@ -122,6 +122,16 @@ def find_metric_value(lines, label):
     return ""
 
 
+def find_metric_value_v3(text, label):
+    """Find metric value in raw page text (V3 format)."""
+    for line in text.split("\n"):
+        if label.lower() in line.lower():
+            vals = re.findall(r"-?\d+\.?\d*", line)
+            if vals:
+                return vals[-1]
+    return ""
+
+
 def find_site_type_and_area(page_texts):
     site_type = "Outdoor"
     area_space = ""
@@ -148,10 +158,92 @@ def find_site_type_and_area(page_texts):
     return site_type, area_space
 
 
+def _is_v3_format(page_texts, pdf_path=None):
+    """Detect V3 format by checking for 'Site ID:' or 'IOH_ENERGY_SAVING_SURVEY_V3',
+    or by filename pattern ('Energy Saving/Survey' without '.pdf' suffix)."""
+    page0_text = page_texts[0] if page_texts else ""
+    if "Site ID:" in page0_text or "IOH_ENERGY_SAVING_SURVEY_V3" in page0_text:
+        return True
+    if pdf_path:
+        basename = os.path.basename(pdf_path)
+        # V3 filenames: "Energy Saving Survey_PLM-..." or "Energy saving survey_PLM-..."
+        if "energy saving survey" in basename.lower():
+            return True
+    return False
+
+
+def _find_site_id(text):
+    """Extract site ID from text, trying multiple patterns."""
+    # Pattern: explicit "Site ID:" label
+    m = re.search(r"Site ID:\s*(\S+)", text)
+    if m:
+        return m.group(1)
+    # Pattern: standard site ID format (2 digits + 3 letters + 4 digits)
+    # Allow underscore or non-word char as boundary
+    m = re.search(r"(?:^|[\s_/])(\d{2}[A-Za-z]{3}\d{4})(?:[\s_/]|$)", text)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _extract_v3_data(pdf_path, page_texts):
+    """Extract data from V3 format (Energy Saving Survey V3).
+    
+    V3 has different labels (with colons), no Site Name, no Region,
+    no "Input dari PLN - Total", and "Jumlah Phase X Y" layout.
+    
+    Falls back to OCR if text extraction yields garbled content (CID fonts).
+    """
+    page0_text = page_texts[0] if page_texts else ""
+    site_id = _find_site_id(page0_text)
+
+    # If text is garbled (CID fonts), fall back to OCR
+    if not site_id:
+        page_texts = _ocr_all_pages(pdf_path)
+        page0_text = page_texts[0] if page_texts else ""
+        site_id = _find_site_id(page0_text)
+
+    # V3 has no site name field -- use site_id as fallback
+    nama_site = site_id
+    region = ""
+    site_type = "Outdoor"
+
+    # Jumlah Phase: "Jumlah Phase 1 3" - first digit is the value, second is an option
+    # Also handles "Jumlah Phase Phase 1" (OCR output)
+    jml_phase = ""
+    m = re.search(r"Jumlah\s+Phase[^\d]*(\d)\s", page0_text)
+    if m:
+        jml_phase = m.group(1)
+
+    daya_actual_raw = find_metric_value_v3(page0_text, "Input dari PLN - Total")
+    daya_actual = ""
+    if daya_actual_raw:
+        try:
+            daya_actual = str(round(float(daya_actual_raw.replace(",", "."))))
+        except ValueError:
+            daya_actual = daya_actual_raw
+
+    area_space = ""
+
+    return {
+        "nama_site": nama_site,
+        "site_id": site_id,
+        "region": region,
+        "site_type": site_type,
+        "jumlah_phase": jml_phase,
+        "daya_actual_w": daya_actual,
+        "area_space_m2": area_space,
+    }
+
+
 def extract_pdf_data(pdf_path):
     lines_by_page = get_pdf_lines(pdf_path)
     page_texts = get_page_texts(pdf_path)
     page0 = lines_by_page[0] if lines_by_page else []
+
+    # Detect V3 format early
+    if _is_v3_format(page_texts, pdf_path):
+        return _extract_v3_data(pdf_path, page_texts)
 
     site_id = find_header_value(page0, "Site ID")
     site_name = find_header_value(page0, "Site Name")
@@ -163,6 +255,17 @@ def extract_pdf_data(pdf_path):
         page0 = lines_by_page[0] if lines_by_page else []
         site_id = find_header_value(page0, "Site ID")
         site_name = find_header_value(page0, "Site Name")
+
+    # Final fallback: try finding site ID by pattern in OCR text
+    # (handles V3 CID-encoded PDFs that bypassed the V3 detection)
+    if not site_id:
+        for text in page_texts:
+            sid = _find_site_id(text)
+            if sid:
+                site_id = sid
+                if not site_name:
+                    site_name = site_id
+                break
 
     region = find_header_value(page0, "Region")
     jml_phase = find_metric_value(page0, "Jumlah Phase")

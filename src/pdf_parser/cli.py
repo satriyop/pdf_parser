@@ -198,6 +198,8 @@ def main():
                 try:
                     no = done_count + len(all_sites) + 1
                     site = parse_single_pdf(pdf_path, area_name=args.area, no=no)
+                    if not site.site_id and not site.nama_site:
+                        raise ValueError("No data extracted — possibly unsupported PDF format")
                     _write_site(writer, site)
                     all_sites.append(site)
                     if sheets_writer:
