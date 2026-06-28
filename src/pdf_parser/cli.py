@@ -13,6 +13,7 @@ from .models import SiteData
 from .progress import ProgressTracker
 from .writers import CsvWriter, XlsxWriter
 from .googledrive import stream_pdf_dir, DriveClient
+from collections import defaultdict
 
 
 VERBOSE = False
@@ -57,6 +58,73 @@ def _detect_writer(output_path):
 
 def _write_site(writer, site):
     writer.write_one(site)
+
+
+def verify_folder(client, folder_id, sheets_writer, tracker, writer=None, quiet=False):
+    """Verify sheet row counts match Drive file counts. Fix discrepancies by re-processing missing files."""
+    all_files = client.list_files(folder_id=folder_id)
+    total_drive = len(all_files)
+
+    folder_groups = defaultdict(list)
+    for f in all_files:
+        top = f["folder"].split("/")[0]
+        folder_groups[top].append(f)
+
+    all_match = True
+    done_ids = set(tracker.data["processed"])
+
+    for folder_name in sorted(folder_groups.keys()):
+        files = folder_groups[folder_name]
+        drive_count = len(files)
+        tab_name = folder_name
+        sheet_count = sheets_writer.count_rows(tab_name)
+
+        if drive_count == sheet_count:
+            if not quiet:
+                print(f"  ✓ {tab_name}: {drive_count} files = {sheet_count} rows")
+            continue
+
+        all_match = False
+        missing_count = drive_count - sheet_count
+        print(f"  ✗ {tab_name}: {drive_count} files ≠ {sheet_count} rows ({missing_count} missing)")
+
+        if missing_count <= 0:
+            print(f"    Sheet has more rows than files — no action taken")
+            continue
+
+        candidate = [f for f in files if f["id"] not in done_ids]
+        if not candidate:
+            candidate = files[:missing_count]
+            for f in candidate:
+                if f["id"] in done_ids:
+                    tracker.data["processed"].remove(f["id"])
+            tracker._save()
+
+        todo = candidate[:missing_count]
+        if not todo:
+            print(f"    No files to re-process")
+            continue
+
+        print(f"    Re-processing {len(todo)} file(s)...")
+
+        with stream_pdf_dir(client, todo) as streamer:
+            for idx, (pdf_path, file_id, folder) in enumerate(streamer):
+                try:
+                    no = sheet_count + idx + 1
+                    area_name = folder.split("/")[0] if folder else tab_name
+                    site = parse_single_pdf(pdf_path, area_name=area_name, no=no)
+                    if not site.site_id and not site.nama_site:
+                        raise ValueError("No data extracted")
+                    if writer:
+                        _write_site(writer, site)
+                    sheets_writer.append_one(site, sheet_name=tab_name)
+                    tracker.mark_done(file_id)
+                    if not quiet:
+                        print(f"    ✓ {no}: {os.path.basename(pdf_path)}")
+                except Exception as e:
+                    print(f"    ✗ {os.path.basename(pdf_path)}: {e}")
+
+    return all_match
 
 
 def main():
@@ -121,6 +189,14 @@ def main():
         metavar="SPREADSHEET_URL",
         help="Output to Google Sheets (URL of existing spreadsheet shared with SA)",
     )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Verify sheet row counts match Drive file counts after processing; fix discrepancies",
+    )
+    parser.add_argument(
+        "--verify-only", action="store_true",
+        help="Skip processing, only verify and fix discrepancies",
+    )
 
     args = parser.parse_args()
     VERBOSE = args.verbose
@@ -144,6 +220,27 @@ def main():
         if not args.quiet:
             print("Connecting to Google Drive ...")
         client = DriveClient(credentials_path=args.credentials or None)
+
+        tracker = ProgressTracker(args.output)
+
+        sheets_writer = None
+        if args.to_sheets:
+            from .sheets import SheetsWriter
+            sheets_writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
+
+        # --- Verify-only mode: skip processing, just verify and fix ---
+        if args.verify_only:
+            if not args.folder:
+                print("Error: --verify-only requires --folder", file=sys.stderr)
+                sys.exit(1)
+            if not args.to_sheets:
+                print("Error: --verify-only requires --to-sheets", file=sys.stderr)
+                sys.exit(1)
+            writer = _detect_writer(args.output)
+            verify_folder(client, args.folder, sheets_writer, tracker, writer=writer, quiet=args.quiet)
+            if isinstance(writer, XlsxWriter):
+                writer.close()
+            return
 
         if args.folder or args.search:
             selected = client.list_files(
@@ -171,7 +268,6 @@ def main():
         if not args.quiet:
             print(f"\nSelected {len(selected)} file(s). Processing ...")
 
-        tracker = ProgressTracker(args.output)
         remaining = tracker.remaining(selected)
         skipped = len(selected) - len(remaining)
 
@@ -184,11 +280,6 @@ def main():
         total = len(remaining)
         done_count = tracker.done_count()
 
-        sheets_writer = None
-        if args.to_sheets:
-            from .sheets import SheetsWriter
-            sheets_writer = SheetsWriter(args.credentials, spreadsheet_url=args.to_sheets)
-
         with stream_pdf_dir(client, remaining) as streamer:
             iterator = tqdm(streamer, desc="Parsing", unit="file",
                             total=total, disable=args.quiet,
@@ -197,7 +288,8 @@ def main():
                 iterator.set_postfix(file=os.path.basename(pdf_path)[:40])
                 try:
                     no = done_count + len(all_sites) + 1
-                    site = parse_single_pdf(pdf_path, area_name=args.area, no=no)
+                    tab_name = folder.split("/")[0] if folder else sheet_name
+                    site = parse_single_pdf(pdf_path, area_name=args.area or tab_name, no=no)
                     if not site.site_id and not site.nama_site:
                         raise ValueError("No data extracted — possibly unsupported PDF format")
                     _write_site(writer, site)
@@ -211,6 +303,11 @@ def main():
 
         if not args.quiet:
             print()
+
+        if args.verify and sheets_writer and args.folder:
+            if not args.quiet:
+                print("Verifying sheet counts...")
+            verify_folder(client, args.folder, sheets_writer, tracker, writer=writer, quiet=args.quiet)
     else:
         pdf_paths = resolve_pdf_paths(args.pdfs)
         if not pdf_paths:

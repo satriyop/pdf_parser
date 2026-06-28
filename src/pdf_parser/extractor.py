@@ -159,16 +159,10 @@ def find_site_type_and_area(page_texts):
 
 
 def _is_v3_format(page_texts, pdf_path=None):
-    """Detect V3 format by checking for 'Site ID:' or 'IOH_ENERGY_SAVING_SURVEY_V3',
-    or by filename pattern ('Energy Saving/Survey' without '.pdf' suffix)."""
+    """Detect V3 format by checking for 'Site ID:' or 'IOH_ENERGY_SAVING_SURVEY_V3' in text."""
     page0_text = page_texts[0] if page_texts else ""
     if "Site ID:" in page0_text or "IOH_ENERGY_SAVING_SURVEY_V3" in page0_text:
         return True
-    if pdf_path:
-        basename = os.path.basename(pdf_path)
-        # V3 filenames: "Energy Saving Survey_PLM-..." or "Energy saving survey_PLM-..."
-        if "energy saving survey" in basename.lower():
-            return True
     return False
 
 
@@ -203,10 +197,17 @@ def _extract_v3_data(pdf_path, page_texts):
         page0_text = page_texts[0] if page_texts else ""
         site_id = _find_site_id(page0_text)
 
-    # V3 has no site name field -- use site_id as fallback
-    nama_site = site_id
+    # Try to find Site Name in V3 text (present in some V3 variants)
+    nama_site = ""
+    m = re.search(r"(?:Site|Nama)\s*[Nn]ame\s*:?\s*(.+)", page0_text)
+    if m:
+        nama_site = m.group(1).strip()
+
+    # Extract region from V3 text (e.g., "Region JAVA")
     region = ""
-    site_type = "Outdoor"
+    m = re.search(r"Region\s*:?\s*(\S+)", page0_text)
+    if m:
+        region = m.group(1)
 
     # Jumlah Phase: "Jumlah Phase 1 3" - first digit is the value, second is an option
     # Also handles "Jumlah Phase Phase 1" (OCR output)
@@ -223,7 +224,7 @@ def _extract_v3_data(pdf_path, page_texts):
         except ValueError:
             daya_actual = daya_actual_raw
 
-    area_space = ""
+    site_type, area_space = find_site_type_and_area(page_texts)
 
     return {
         "nama_site": nama_site,
@@ -250,21 +251,21 @@ def extract_pdf_data(pdf_path):
 
     # Fallback to OCR if text extraction returned no data
     if not site_id and not site_name:
-        page_texts = _ocr_all_pages(pdf_path)
-        lines_by_page = _ocr_lines_from_text(page_texts)
+        ocr_texts = _ocr_all_pages(pdf_path)
+        lines_by_page = _ocr_lines_from_text(ocr_texts)
         page0 = lines_by_page[0] if lines_by_page else []
         site_id = find_header_value(page0, "Site ID")
         site_name = find_header_value(page0, "Site Name")
+    else:
+        ocr_texts = []
 
-    # Final fallback: try finding site ID by pattern in OCR text
-    # (handles V3 CID-encoded PDFs that bypassed the V3 detection)
+    # Final fallback: try finding site ID by pattern in original + OCR text
+    # (handles PDFs with readable site ID but no structured labels)
     if not site_id:
-        for text in page_texts:
+        for text in page_texts + ocr_texts:
             sid = _find_site_id(text)
             if sid:
                 site_id = sid
-                if not site_name:
-                    site_name = site_id
                 break
 
     region = find_header_value(page0, "Region")
@@ -282,7 +283,7 @@ def extract_pdf_data(pdf_path):
         except ValueError:
             daya_actual = daya_actual_raw
 
-    site_type, area_space = find_site_type_and_area(page_texts)
+    site_type, area_space = find_site_type_and_area(ocr_texts or page_texts)
 
     return {
         "nama_site": site_name,

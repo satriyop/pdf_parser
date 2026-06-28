@@ -48,7 +48,15 @@ class DriveClient:
         files = []
 
         if folder_id:
-            files = self._walk_folder(folder_id, search=search)
+            # Get folder name so files at the top level get a proper folder tag
+            try:
+                folder_meta = self.service.files().get(
+                    fileId=folder_id, fields="name"
+                ).execute()
+                folder_name = folder_meta.get("name", "") or ""
+            except Exception:
+                folder_name = ""
+            files = self._walk_folder(folder_id, search=search, folder_path=folder_name)
         else:
             query_parts = ["mimeType='application/pdf'"]
             if search:

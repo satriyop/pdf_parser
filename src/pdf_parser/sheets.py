@@ -72,6 +72,26 @@ class SheetsWriter:
             except Exception:
                 pass
 
+    def count_rows(self, sheet_name):
+        try:
+            result = _execute_with_retry(
+                self.service.spreadsheets().values().get(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f"'{sheet_name}'!A:A",
+                    valueRenderOption="FORMATTED_VALUE",
+                )
+            )
+        except HttpError as e:
+            if e.resp.status == 400:
+                return 0
+            self._raise_on_api_error(e)
+            raise
+        finally:
+            self._close_http()
+            time.sleep(0.3)
+        values = result.get("values", [])
+        return max(0, len(values) - 1)
+
     def _raise_on_api_error(self, e):
         status = e.resp.status if hasattr(e, "resp") else 0
         if status == 403:
@@ -117,23 +137,24 @@ class SheetsWriter:
         if sheet_name in self._initialized:
             return
         is_new = self._ensure_sheet(sheet_name)
-        if is_new:
-            range_name = f"'{sheet_name}'!A1"
-            try:
-                _execute_with_retry(
-                    self.service.spreadsheets().values().update(
-                        spreadsheetId=self.spreadsheet_id,
-                        range=range_name,
-                        valueInputOption="USER_ENTERED",
-                        body={"values": [headers]},
-                    )
+        # Write headers on first access regardless of whether sheet is new or old,
+        # to handle the case where a previous run created the tab but failed to write headers
+        range_name = f"'{sheet_name}'!A1"
+        try:
+            _execute_with_retry(
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=range_name,
+                    valueInputOption="RAW",
+                    body={"values": [headers]},
                 )
-            except HttpError as e:
-                self._raise_on_api_error(e)
-                raise
-            finally:
-                self._close_http()
-                time.sleep(0.5)
+            )
+        except HttpError as e:
+            self._raise_on_api_error(e)
+            raise
+        finally:
+            self._close_http()
+            time.sleep(0.5)
         self._initialized.add(sheet_name)
 
     def append_one(self, site, sheet_name="Survey Data"):
